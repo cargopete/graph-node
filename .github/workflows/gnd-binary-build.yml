@@ -2,6 +2,11 @@ name: Build gnd Binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run npm publish (no actual publish)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -156,4 +161,107 @@ jobs:
           # Upload Windows x86_64 asset
           gh release upload $VERSION artifacts/gnd-windows-x86_64.exe/gnd-windows-x86_64.exe.zip --repo $GITHUB_REPOSITORY
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-npm:
+    name: Publish npm package for ${{ matrix.platform }}
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            asset: gnd-linux-x86_64.gz
+            os_field: linux
+            cpu_field: x64
+            extract: gunzip
+          - platform: linux-arm64
+            asset: gnd-linux-aarch64.gz
+            os_field: linux
+            cpu_field: arm64
+            extract: gunzip
+          - platform: darwin-x64
+            asset: gnd-macos-x86_64.gz
+            os_field: darwin
+            cpu_field: x64
+            extract: gunzip
+          - platform: darwin-arm64
+            asset: gnd-macos-aarch64.gz
+            os_field: darwin
+            cpu_field: arm64
+            extract: gunzip
+          - platform: win32-x64
+            asset: gnd-windows-x86_64.exe.zip
+            os_field: win32
+            cpu_field: x64
+            extract: unzip
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Download gnd binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "${{ matrix.asset }}" \
+            --output ./binary-archive
+
+      - name: Extract binary
+        run: |
+          mkdir -p pkg/bin
+          if [ "${{ matrix.extract }}" = "gunzip" ]; then
+            gunzip -c ./binary-archive > pkg/bin/gnd
+            chmod +x pkg/bin/gnd
+          else
+            unzip ./binary-archive -d pkg/bin
+            mv pkg/bin/*.exe pkg/bin/gnd.exe
+          fi
+
+      - name: Create package.json
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          if [ "${{ matrix.os_field }}" = "win32" ]; then
+            BIN_PATH="./bin/gnd.exe"
+          else
+            BIN_PATH="./bin/gnd"
+          fi
+
+          cat > pkg/package.json << EOF
+          {
+            "name": "@graphprotocol/gnd-${{ matrix.platform }}",
+            "version": "${VERSION}",
+            "description": "gnd binary for ${{ matrix.platform }}",
+            "os": ["${{ matrix.os_field }}"],
+            "cpu": ["${{ matrix.cpu_field }}"],
+            "bin": {
+              "gnd": "${BIN_PATH}"
+            },
+            "publishConfig": {
+              "access": "public",
+              "provenance": true
+            },
+            "license": "(Apache-2.0 OR MIT)",
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/graphprotocol/graph-node.git"
+            }
+          }
+          EOF
+
+      - name: Publish
+        run: npm publish --provenance --access public ${{ inputs.dry_run && '--dry-run' || '' }}
+        working-directory: pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GRAPHPROTOCOL_NPM_TOKEN }}
