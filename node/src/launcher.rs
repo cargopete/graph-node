@@ -594,9 +594,13 @@ pub async fn run(
                 "Block ingestor disabled by --disable-block-ingestor"
             );
         } else {
-            info!(
+            warn!(
                 logger,
-                "Not running block ingestion, ingestor is `{}`", config.chains.ingestor
+                "Not running block ingestion: this node is `{}` but `[chains] ingestor` is `{}`. \
+                 Ingestion runs only on the node whose `--node-id` matches that value; if no \
+                 running node has it, the chain head will not advance",
+                config.node,
+                config.chains.ingestor
             );
         }
 
